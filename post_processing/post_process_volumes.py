@@ -565,7 +565,6 @@ def split_right_left(img, nondfault_labels_to_split=None, filename=None):
 def supress_non_largest_components(img, default_val = 0):
     """As a last step, supress all non largest components"""
     logger = get_this_logger()
-    index_arr = get_index_arr(img)
     img_mod = copy.deepcopy(img)
     new_background = np.zeros(img.shape, dtype=np.bool_)
     for name, label in all_labels.items():
@@ -734,6 +733,9 @@ def bodypart_limitations(img):
 
   
     # Assign values larger than the lung according to the rules
+    # Evaluates each rule once per axial slice instead of once per voxel. This relies on every rule in
+    # label_head_rules / label_abdomen_rules / upper_lunge_rules depending on the axial coordinate x[2]
+    # only; a rule that also reads x[0] or x[1] must not go through _apply.
     def _apply(vox, rule):
         zs, inv = np.unique(vox[:, 2], return_inverse=True)
         vals = np.array([rule((0, 0, z)) for z in zs])
