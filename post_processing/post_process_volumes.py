@@ -760,7 +760,11 @@ def process_file(args):
     file_path, target_path = args
     file_name = file_path.split("/")[-1]
     nib_img = nib.load(file_path)
-    img, header = nib_img.get_fdata().astype(np.uint8), nib_img.header
+    # np.asanyarray(dataobj), not get_fdata(): these are integer label maps with no
+    # scl_slope/scl_inter, so the result is identical, but get_fdata() always materialises
+    # the volume as float64 first -- ~900 MB instead of ~110 MB for a 512x512x450 label map,
+    # which is what limits how many volumes can be post-processed in parallel.
+    img, header = np.asanyarray(nib_img.dataobj).astype(np.uint8), nib_img.header
     
     logger = get_this_logger()
     logger.info(f"Now processing file {file_name}")
