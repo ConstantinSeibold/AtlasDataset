@@ -175,8 +175,39 @@ all_labels = {key:int(val) for val,key in all_labels.items()}
 
 assumption = "The assumption for the postprocessing is the LAS orientation"
 
+class _IndexArr:
+    """index_arr[mask] of the original (X,Y,Z,3) coordinate grid == np.argwhere(mask)."""
+    def __getitem__(self, mask):
+        return np.argwhere(mask)
+
+
 def get_index_arr(img):
-    return np.moveaxis(np.moveaxis(np.stack(np.meshgrid(np.arange(img.shape[0]), np.arange(img.shape[1]), np.arange(img.shape[2]))),0,3),0,1)
+    return _IndexArr()
+
+
+def _unique_counts(a):
+    """np.unique(a, return_counts=True) for non-negative integer label arrays.
+
+    Flattens in memory order (the volumes are Fortran-ordered, and np.unique's
+    C-order flatten dominated the runtime) and counts with bincount; the result
+    (sorted present values, their counts) is identical.
+    """
+    flat = np.ravel(a, order="K")
+    if flat.dtype.kind in "ub" or (flat.dtype.kind == "i" and (flat.size == 0 or flat.min() >= 0)):
+        bc = np.bincount(flat.astype(np.int64, copy=False)) if flat.size else np.zeros(0, np.int64)
+        uv = np.flatnonzero(bc)
+        return uv.astype(flat.dtype if flat.dtype.kind != "b" else np.int64), bc[uv]
+    return np.unique(flat, return_counts=True)
+
+
+def _counts(cc):
+    uv, uc = _unique_counts(cc)
+    return list(zip(uv.tolist(), uc.tolist()))
+
+
+def _set_voxels(img, voxels, value):
+    if len(voxels):
+        img[tuple(np.asarray(voxels).T)] = value
 
 def count_ribs(img):
     """Check nof voxels in cc
@@ -201,7 +232,7 @@ def count_ribs(img):
         all_ribs_msk = np.logical_or(all_ribs_msk, img == rib_idx)
     
     all_ribs_cc = cc3d.connected_components(all_ribs_msk, connectivity=6)
-    uv, uc = np.unique(all_ribs_cc,return_counts=True)
+    uv, uc = _unique_counts(all_ribs_cc)
     
     #Assumption is that ribs are not connected to each other. Keep only the 24 costa labels 
     all_rib_labels = uv[np.argsort(uc, )[::-1][1:1+len(rib_labels)]]
@@ -273,18 +304,15 @@ def count_ribs(img):
         costa_voxel_left = index_arr[msk_left]
         costa_voxel_right = index_arr[msk_right]
 
-        for voxel in costa_voxel_left:
-            img_mod[tuple(voxel)] = costa_label_left
-        
-        for voxel in costa_voxel_right:
-            img_mod[tuple(voxel)] = costa_label_right
+        _set_voxels(img_mod, costa_voxel_left, costa_label_left)
+        _set_voxels(img_mod, costa_voxel_right, costa_label_right)
     
     return img_mod
 
 def merge_cc_of_adjacent(cc_cur, cc_above, voxel_supression_threshold):
     
     
-    nof_voxels_cc = [(x, np.sum(cc_cur == x)) for x in np.unique(cc_cur)]
+    nof_voxels_cc = _counts(cc_cur)
     relevant_cc = []
 
     for idx, nof_voxels in nof_voxels_cc:
@@ -294,7 +322,7 @@ def merge_cc_of_adjacent(cc_cur, cc_above, voxel_supression_threshold):
     #Remove background cc from relevant cc. Assumption is that background is largest cc
     relevant_cc = sorted(relevant_cc, key=lambda x: x[1], reverse=True)[1:]
     
-    nof_voxels_above = [(x, np.sum(cc_above == x )) for x in np.unique(cc_above)]
+    nof_voxels_above = _counts(cc_above)
 
     relevant_cc_above = []
     for idx, nof_voxels in nof_voxels_above:
@@ -315,7 +343,7 @@ def merge_cc_of_adjacent(cc_cur, cc_above, voxel_supression_threshold):
             mskcc_pool = np.logical_or(mskcc_pool, cc_cur == idx)
 
         cc_pool = cc3d.connected_components(mskcc_pool)
-        rel_components_pool = sorted([(x, np.sum(cc_pool == x )) for x in np.unique(cc_pool)],key=lambda x:x[1], reverse=True)[1:]
+        rel_components_pool = sorted(_counts(cc_pool),key=lambda x:x[1], reverse=True)[1:]
 
         return cc_pool==rel_components_pool[0][0]
     
@@ -327,7 +355,7 @@ def get_relevant_ccs(cc, keep_threshold, keep_main=True):
         cutoff_idx = 1
     else:
         cutoff_idx = 2
-    return sorted([(x,np.sum(cc==x)) for x in np.unique(cc) if np.sum(cc==x) > keep_threshold],key=lambda x:x[1], reverse=True)[cutoff_idx:]
+    return sorted([(x, c) for x, c in _counts(cc) if c > keep_threshold],key=lambda x:x[1], reverse=True)[cutoff_idx:]
 
 
 def spine_adjacent_pairs(img, voxel_supression_threshold=10, default_val=0, include_sacrum=True):
@@ -369,7 +397,7 @@ def spine_adjacent_pairs(img, voxel_supression_threshold=10, default_val=0, incl
             cc_cur = cc3d.connected_components(msk_cur)
             
             #Supress small connectred components
-            nof_voxels_cc = [(x, np.sum(cc_cur == x)) for x in np.unique(cc_cur)]
+            nof_voxels_cc = _counts(cc_cur)
 
             relevant_cc = []
 
@@ -490,16 +518,14 @@ def split_right_left(img, nondfault_labels_to_split=None, filename=None):
             left_right_confusion = left_points_geometric_check == right
             if left_right_confusion.sum().item() > 0:
                 wrong_voxels = points_labeled_left[left_right_confusion]
-                for voxel in wrong_voxels:
-                    img_mod[tuple(voxel)] = label_right
+                _set_voxels(img_mod, wrong_voxels, label_right)
 
             #Check which points on the left of the hyperplane are assigned as label_right and assign them as label_left
             right_points_geometric_check = np.sign(np.dot(point_plane - points_labeled_right, normal_vector))
             right_left_confusion = right_points_geometric_check == left
             if right_left_confusion.sum().item()>0:
                 wrong_voxels = points_labeled_right[right_left_confusion]
-                for voxel in wrong_voxels:
-                    img_mod[tuple(voxel)] = label_left
+                _set_voxels(img_mod, wrong_voxels, label_left)
             
             #Merge labels close to hyperplane to largest cc, as they might have been cut close to the hyperplane
             cc_left = cc3d.connected_components(img_mod == label_left)
@@ -516,7 +542,7 @@ def split_right_left(img, nondfault_labels_to_split=None, filename=None):
         else:
             #Only look at venas below the upper limit of the sacrum, as before is too close to hyperplane
             sacrum_cc = cc3d.connected_components(img_mod==sacrum_label[0])
-            sacrum_cc_identifier, sacrum_cc_count = np.unique(sacrum_cc, return_counts=True)
+            sacrum_cc_identifier, sacrum_cc_count = _unique_counts(sacrum_cc)
             sacrum_main_cc_index = sacrum_cc_identifier[np.argsort(sacrum_cc_count)[::-1][1]]
             sacrum_main_cc_max = np.max(index_arr[sacrum_cc == sacrum_main_cc_index], axis=0)
             
@@ -546,12 +572,11 @@ def supress_non_largest_components(img, default_val = 0):
         if name not in keep_fragment_labels:
             logger.info(f"Supressing nonlargest cc for label {name}")
             label_cc = cc3d.connected_components(img == label, connectivity=6)
-            uv, uc = np.unique(label_cc, return_counts=True)
+            uv, uc = _unique_counts(label_cc)
             dominant_vals = uv[np.argsort(uc)[::-1][:2]]
             if len(dominant_vals)>=2: #Case: no predictions
                 new_background = np.logical_or(new_background, np.logical_not(np.logical_or(label_cc==dominant_vals[0], label_cc==dominant_vals[1])))
-    for voxel in index_arr[new_background]:
-        img_mod[tuple(voxel)] = default_val
+    img_mod[new_background] = default_val
     return img_mod
 
 def split_cc_based_on_axial_locatoin(img):
@@ -573,11 +598,11 @@ def split_cc_based_on_axial_locatoin(img):
     new_label_right = 129
 
     thyroid_mask_left = cc3d.connected_components(img == relevant_left_right_pairs["thyroid"][0])
-    uv_left, uc_left = np.unique(thyroid_mask_left, return_counts=True)
+    uv_left, uc_left = _unique_counts(thyroid_mask_left)
     rel_vals_left = uv_left[np.argsort(uc_left)[::-1][1:3]]
     
     thyroid_mask_right = cc3d.connected_components(img == relevant_left_right_pairs["thyroid"][1])  
-    uv_right, uc_right = np.unique(thyroid_mask_right ,return_counts=True)
+    uv_right, uc_right = _unique_counts(thyroid_mask_right)
     rel_vals_right = uv_right[np.argsort(uc_right)[::-1][1:3]]
 
     left_medians = []
@@ -687,7 +712,7 @@ def bodypart_limitations(img):
 
     for name, label in lung_box_upper.items():
         ccs = cc3d.connected_components(img_mod==label)
-        uv, uc = np.unique(ccs,return_counts=True)
+        uv, uc = _unique_counts(ccs)
         main_cc_index = np.argsort(uc)[::-1][1]
         msk = ccs == uv[main_cc_index] 
         max_points_upper_lunge.append(np.max(index_arr[msk], axis=0))
@@ -698,7 +723,7 @@ def bodypart_limitations(img):
 
     for name, label in lung_box_lower.items():
         ccs = cc3d.connected_components(img_mod==label)
-        uv, uc = np.unique(ccs,return_counts=True)
+        uv, uc = _unique_counts(ccs)
         main_cc_index = np.argsort(uc)[::-1][1]
         msk = ccs == uv[main_cc_index] 
         min_points_lower_lunge.append(np.min(index_arr[msk], axis=0))
@@ -709,27 +734,27 @@ def bodypart_limitations(img):
 
   
     # Assign values larger than the lung according to the rules
+    def _apply(vox, rule):
+        zs, inv = np.unique(vox[:, 2], return_inverse=True)
+        vals = np.array([rule((0, 0, z)) for z in zs])
+        if len(vox):
+            img_mod[tuple(vox.T)] = vals[inv.ravel()]
+
     for name, label in above_lunge_procesing_labels.items():
-        msk = img_mod == label
-        for voxel in index_arr[msk]:
-            if voxel[2]>upper_bound_lung:
-                img_mod[tuple(voxel)] = upper_lunge_rules[name](voxel)
+        vox = np.argwhere(img_mod == label)
+        _apply(vox[vox[:, 2] > upper_bound_lung], upper_lunge_rules[name])
 
     #Right now, only supress colon and rib cartige and remap gonads as eyes
     for name, label in head_processing_labels.items():
-        msk = img_mod == label
-        for voxel in index_arr[msk]:
-            if voxel[2]> boundary_head:
-                img_mod[tuple(voxel)] = label_head_rules[name](voxel)
+        vox = np.argwhere(img_mod == label)
+        _apply(vox[vox[:, 2] > boundary_head], label_head_rules[name])
     
     for name, label in abdomen_processing_labels.items():
-        msk = img_mod == label
-        for voxel in index_arr[msk]:
-            if boundary_abdomen < voxel[2] < boundary_head:
-                #Voxel is inside abdomen
-                img_mod[tuple(voxel)] = label_abdomen_rules[name](voxel)
-            elif voxel[2]>boundary_head:
-                img_mod[tuple(voxel)] = label_head_rules[name](voxel)
+        vox = np.argwhere(img_mod == label)
+        inside = (boundary_abdomen < vox[:, 2]) & (vox[:, 2] < boundary_head)
+        head = ~inside & (vox[:, 2] > boundary_head)
+        _apply(vox[inside], label_abdomen_rules[name])
+        _apply(vox[head], label_head_rules[name])
     #Separate predictions for gonads into left and right 
     img_mod = split_right_left(img_mod, nondfault_labels_to_split={"eyeballs":(130,131)})    
 
