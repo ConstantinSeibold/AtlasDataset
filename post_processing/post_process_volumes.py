@@ -167,7 +167,8 @@ above_lunge_procesing_labels = {
     "bronchie":125
 }
 
-with open("Data/label_name.csv","r") as f:
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Data",
+                       "label_name.csv"), "r") as f:
     labels = f.readlines()
 all_labels = dict([line.replace("\n","").split(",") for idx, line in enumerate(labels) if idx > 0])
 all_labels = {key:int(val) for val,key in all_labels.items()}
@@ -194,7 +195,7 @@ def count_ribs(img):
     index_arr = get_index_arr(img)
     img_mod = copy.deepcopy(img)
 
-    all_ribs_msk = np.zeros(img.shape).astype(np.bool8)
+    all_ribs_msk = np.zeros(img.shape).astype(np.bool_)
     
     for rib_name, rib_idx in rib_labels.items():
         all_ribs_msk = np.logical_or(all_ribs_msk, img == rib_idx)
@@ -307,7 +308,7 @@ def merge_cc_of_adjacent(cc_cur, cc_above, voxel_supression_threshold):
     #There are components left from the vertebra which are neither background nor the vertebra itself
     if len(relevant_cc_above) > 0:
         #Pool the remaining components above with all relevant cc of current vertebra 
-        mskcc_pool = np.zeros(cc_cur.shape).astype(np.bool8)
+        mskcc_pool = np.zeros(cc_cur.shape).astype(np.bool_)
         for idx, _ in relevant_cc_above:
             mskcc_pool = np.logical_or(mskcc_pool, cc_above==idx)
         for idx, _ in relevant_cc:
@@ -540,7 +541,7 @@ def supress_non_largest_components(img, default_val = 0):
     logger = get_this_logger()
     index_arr = get_index_arr(img)
     img_mod = copy.deepcopy(img)
-    new_background = np.zeros(img.shape, dtype=np.bool8)
+    new_background = np.zeros(img.shape, dtype=np.bool_)
     for name, label in all_labels.items():
         if name not in keep_fragment_labels:
             logger.info(f"Supressing nonlargest cc for label {name}")
